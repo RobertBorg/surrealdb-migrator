@@ -127,6 +127,7 @@ function run() {
                             !(resp.statusCode >= 200 && resp.statusCode < 300))
                             return rej(new Error(`did not receive 2XX status, it was ${resp.statusCode}: ${resp.statusMessage}`));
                         const data = yield streamToString(resp);
+                        core.debug(`response: ${data}`);
                         if (!resp.complete)
                             return rej(new Error('complete response was not received'));
                         res((() => {

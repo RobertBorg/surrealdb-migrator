@@ -133,6 +133,7 @@ async function run(): Promise<void> {
                 ),
               );
             const data = await streamToString(resp);
+            core.debug(`response: ${data}`);
             if (!resp.complete)
               return rej(new Error('complete response was not received'));
             res(
