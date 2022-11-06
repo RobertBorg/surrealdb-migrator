@@ -34,18 +34,149 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(186));
-const wait_1 = __nccwpck_require__(817);
+const promises_1 = __importDefault(__nccwpck_require__(225));
+const https_1 = __importDefault(__nccwpck_require__(211));
+const path_1 = __importDefault(__nccwpck_require__(622));
+// eslint-disable-next-line @typescript-eslint/promise-function-async, @typescript-eslint/no-explicit-any
+function streamToString(stream) {
+    const chunks = [];
+    return new Promise((resolve, reject) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        stream.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        stream.on('error', (err) => reject(err));
+        stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    });
+}
 function run() {
+    var _a, _b;
     return __awaiter(this, void 0, void 0, function* () {
         try {
-            const ms = core.getInput('milliseconds');
-            core.debug(`Waiting ${ms} milliseconds ...`); // debug is only output if you set the secret `ACTIONS_STEP_DEBUG` to true
-            core.debug(new Date().toTimeString());
-            yield (0, wait_1.wait)(parseInt(ms, 10));
-            core.debug(new Date().toTimeString());
-            core.setOutput('time', new Date().toTimeString());
+            const databaseBaseUrl = core.getInput('databaseBaseUrl', { required: true });
+            const databaseUser = core.getInput('databaseUser', { required: true });
+            const databasePassword = core.getInput('databasePassword', {
+                required: true,
+            });
+            const databaseNamespace = core.getInput('databaseNamespace', {
+                required: true,
+            });
+            const databaseDatabase = core.getInput('databaseDatabase', {
+                required: true,
+            });
+            const workingDirectory = (_a = core.getInput('working-directory')) !== null && _a !== void 0 ? _a : '.';
+            const relativeMigrationsPath = path_1.default.join(workingDirectory, (_b = core.getInput('migrationsRelativePath')) !== null && _b !== void 0 ? _b : 'migrations');
+            if (databaseNamespace.includes(';')) {
+                throw new Error(`databaseNamespace can't contain ';'`);
+            }
+            if (databaseDatabase.includes(';')) {
+                throw new Error(`databaseDatabase can't contain ';'`);
+            }
+            const files = yield promises_1.default.readdir(relativeMigrationsPath, {
+                withFileTypes: true,
+                encoding: 'utf8',
+            });
+            const oneOffMigrations = [];
+            const idempotentMigrations = [];
+            for (const file of files) {
+                if (!file.isFile()) {
+                    core.debug(`ignoring ${file} as it's not a file`);
+                    continue;
+                }
+                if (!(file.name.endsWith('.sql') ||
+                    file.name.endsWith('.surrealql') ||
+                    file.name.endsWith('.surql'))) {
+                    core.debug(`ignoring ${file} as it dosen't end with .sql, .surrealql or .surql`);
+                    continue;
+                }
+                const idResult = /^(?<id>\d+)/.exec(file.name);
+                if (!idResult) {
+                    core.debug(`found idempotent migraiton ${file.name}`);
+                    idempotentMigrations.push(file);
+                }
+                else {
+                    const id = idResult[1];
+                    core.debug(`found one-off migration with id ${id} : ${file}`);
+                    oneOffMigrations.push([id, file]);
+                }
+            }
+            const comparisonOptions = { numeric: true, sensitivity: 'base' };
+            oneOffMigrations.sort((a, b) => a[0].localeCompare(b[0], undefined, comparisonOptions));
+            idempotentMigrations.sort((a, b) => a.name.localeCompare(b.name, undefined, comparisonOptions));
+            // eslint-disable-next-line @typescript-eslint/promise-function-async
+            const surQLClient = (sql) => {
+                return new Promise((res, rej) => {
+                    const req = https_1.default.request(new URL('sql', databaseBaseUrl), {
+                        headers: {
+                            Accept: 'application/json',
+                            Authorization: `Basic ${Buffer.from(`${databaseUser}:${databasePassword}`).toString('base64')}`,
+                            NS: databaseNamespace,
+                            DB: databaseDatabase,
+                        },
+                        method: 'POST',
+                    });
+                    req.on('response', resp => {
+                        if (!resp.complete)
+                            return rej(new Error('complete response was not received'));
+                        if (resp.statusCode &&
+                            !(resp.statusCode >= 200 && resp.statusCode < 300))
+                            return rej(new Error(`did not receive 2XX status, it was ${resp.statusCode}: ${resp.statusMessage}`));
+                        res(
+                        // eslint-disable-next-line github/no-then
+                        streamToString(resp).then((r) => __awaiter(this, void 0, void 0, function* () {
+                            try {
+                                return JSON.parse(r);
+                            }
+                            catch (e) {
+                                throw new Error(`unable to parse json: ${e}`);
+                            }
+                        })));
+                    });
+                    req.write(sql, err => {
+                        if (err)
+                            return rej(err);
+                    });
+                });
+            };
+            let previouslyRunOneOffMigrationsResult = (yield surQLClient('SELECT filename_prefix FROM migration;'))[0];
+            if (previouslyRunOneOffMigrationsResult.status !== 'OK') {
+                const defineMigrationsResult = yield surQLClient(`
+        DEFINE NAMESPACE ${databaseNamespace};
+        DEFINE DATABASE ${databaseDatabase};
+        DEFINE TABLE migration SCHEMAFULL PERMISSIONS NONE;
+        DEFINE FIELD filename_prefix ON TABLE migration TYPE string;
+        `);
+                if (!defineMigrationsResult.every(r => r.status === 'OK')) {
+                    throw new Error(`unable to define migration table; ${defineMigrationsResult}`);
+                }
+                previouslyRunOneOffMigrationsResult = (yield surQLClient('SELECT filename_prefix FROM migration;'))[0];
+                if (previouslyRunOneOffMigrationsResult.status !== 'OK') {
+                    throw new Error(`unable to fetch previously run migrations from db ${previouslyRunOneOffMigrationsResult}`);
+                }
+            }
+            const previouslyRunOneOffMigrations = previouslyRunOneOffMigrationsResult.result.map(e => e.filename_prefix);
+            for (const [filenamePrefix, file] of oneOffMigrations) {
+                if (previouslyRunOneOffMigrations.includes(filenamePrefix)) {
+                    core.debug(`skipping ${file} as it's be executed before`);
+                    continue;
+                }
+                const execResult = yield surQLClient(`BEGIN TRANSACTION; ${yield promises_1.default.readFile(path_1.default.join(relativeMigrationsPath, file.name), 'utf-8')}; CREATE migration SET filename_prefix = '${filenamePrefix}'; COMMIT TRANSACTION;`);
+                if (!execResult.every(r => r.status === 'OK')) {
+                    throw new Error(`Failed executing migration ${file.name}: ${JSON.stringify(execResult)}`);
+                }
+                core.info(`Executed one-off migration ${file.name} successfully`);
+            }
+            for (const file of idempotentMigrations) {
+                const execResult = yield surQLClient(`BEGIN TRANSACTION; ${yield promises_1.default.readFile(path_1.default.join(relativeMigrationsPath, file.name), 'utf-8')}; COMMIT TRANSACTION;`);
+                if (!execResult.every(r => r.status === 'OK')) {
+                    throw new Error(`Failed executing migration ${file.name}: ${JSON.stringify(execResult)}`);
+                }
+                core.info(`Executed idempotent migration ${file.name} successfully`);
+            }
         }
         catch (error) {
             if (error instanceof Error)
@@ -54,37 +185,6 @@ function run() {
     });
 }
 run();
-
-
-/***/ }),
-
-/***/ 817:
-/***/ (function(__unused_webpack_module, exports) {
-
-"use strict";
-
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.wait = void 0;
-function wait(milliseconds) {
-    return __awaiter(this, void 0, void 0, function* () {
-        return new Promise(resolve => {
-            if (isNaN(milliseconds)) {
-                throw new Error('milliseconds not a number');
-            }
-            setTimeout(() => resolve('done!'), milliseconds);
-        });
-    });
-}
-exports.wait = wait;
 
 
 /***/ }),
@@ -2805,6 +2905,14 @@ module.exports = require("events");
 
 "use strict";
 module.exports = require("fs");
+
+/***/ }),
+
+/***/ 225:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("fs/promises");
 
 /***/ }),
 

@@ -1,11 +1,31 @@
 name: 'Your name here'
-description: 'Provide a description here'
-author: 'Your name or organization here'
+description: 'Runs migrations on surrealdb. Supports one-off migrations(these are prefixed by digits) and idempotent migrations'
+author: 'Robert Borg'
 inputs:
-  milliseconds: # change this
+  working-directory:
+    required: false
+    description: 'directory in which we should look for migrationsRelativePath dir in. example: database'
+    default: '.'
+  databaseBaseUrl:
     required: true
-    description: 'input description here'
-    default: 'default value if applicable'
+    description: 'the base url for database. example: http://localhost:8000'
+  databaseUser:
+    required: true
+    description: 'the database user to use. example: root'
+    default: 'root'
+  databasePassword:
+    required: true
+    description: 'the password for the provided database user. example: root'
+  databaseNamespace:
+    required: true
+    description: 'which namespace to execute migrations in. example: public'
+  databaseDatabase:
+    required: true
+    description: 'which database to execute migrations in. example: public'
+  migrationsRelativePath:
+    required: false
+    description: 'where to look for migrations. example: migrations'
+    default: 'migrations'
 runs:
   using: 'node16'
   main: 'dist/index.js'
