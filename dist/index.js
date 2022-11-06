@@ -110,36 +110,39 @@ function run() {
             // eslint-disable-next-line @typescript-eslint/promise-function-async
             const surQLClient = (sql) => {
                 return new Promise((res, rej) => {
-                    const req = https_1.default.request(new URL('sql', databaseBaseUrl), {
+                    const url = new URL('sql', databaseBaseUrl);
+                    const reqOpts = {
                         headers: {
                             Accept: 'application/json',
-                            Authorization: `Basic ${Buffer.from(`${databaseUser}:${databasePassword}`).toString('base64')}`,
                             NS: databaseNamespace,
                             DB: databaseDatabase,
                         },
                         method: 'POST',
-                    });
-                    req.on('response', resp => {
-                        if (!resp.complete)
-                            return rej(new Error('complete response was not received'));
+                    };
+                    core.debug(`Requesting from ${JSON.stringify(url)}`);
+                    core.debug(`with ${JSON.stringify(reqOpts)}`);
+                    core.debug(`with data: ${sql}`);
+                    const req = https_1.default.request(url, Object.assign(Object.assign({}, reqOpts), { headers: Object.assign(Object.assign({}, reqOpts.headers), { Authorization: `Basic ${Buffer.from(`${databaseUser}:${databasePassword}`).toString('base64')}` }) }), (resp) => __awaiter(this, void 0, void 0, function* () {
                         if (resp.statusCode &&
                             !(resp.statusCode >= 200 && resp.statusCode < 300))
                             return rej(new Error(`did not receive 2XX status, it was ${resp.statusCode}: ${resp.statusMessage}`));
-                        res(
-                        // eslint-disable-next-line github/no-then
-                        streamToString(resp).then((r) => __awaiter(this, void 0, void 0, function* () {
+                        const data = yield streamToString(resp);
+                        if (!resp.complete)
+                            return rej(new Error('complete response was not received'));
+                        res((() => {
                             try {
-                                return JSON.parse(r);
+                                return JSON.parse(data);
                             }
                             catch (e) {
                                 throw new Error(`unable to parse json: ${e}`);
                             }
-                        })));
-                    });
+                        })());
+                    }));
                     req.write(sql, err => {
                         if (err)
                             return rej(err);
                     });
+                    req.end();
                 });
             };
             let previouslyRunOneOffMigrationsResult = (yield surQLClient('SELECT filename_prefix FROM migration;'))[0];
@@ -164,7 +167,8 @@ function run() {
                     core.debug(`skipping ${file} as it's be executed before`);
                     continue;
                 }
-                const execResult = yield surQLClient(`BEGIN TRANSACTION; ${yield promises_1.default.readFile(path_1.default.join(relativeMigrationsPath, file.name), 'utf-8')}; CREATE migration SET filename_prefix = '${filenamePrefix}'; COMMIT TRANSACTION;`);
+                const sql = (yield promises_1.default.readFile(path_1.default.join(relativeMigrationsPath, file.name), 'utf-8')).trimEnd();
+                const execResult = yield surQLClient(`BEGIN TRANSACTION; ${sql.endsWith(';') ? sql.substring(0, sql.length - 1) : sql}; CREATE migration SET filename_prefix = '${filenamePrefix}'; COMMIT TRANSACTION;`);
                 if (!execResult.every(r => r.status === 'OK')) {
                     throw new Error(`Failed executing migration ${file.name}: ${JSON.stringify(execResult)}`);
                 }
