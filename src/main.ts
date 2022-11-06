@@ -69,7 +69,7 @@ async function run(): Promise<void> {
         idempotentMigrations.push(file);
       } else {
         const id = idResult[1];
-        core.debug(`found one-off migration with id ${id} : ${file}`);
+        core.debug(`found one-off migration with id ${id} : ${file.name}`);
         oneOffMigrations.push([id, file]);
       }
     }
